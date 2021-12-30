@@ -1,0 +1,8 @@
+config USE_SEGGER_RTT
+    default y
+
+config RTT_CONSOLE
+    default y
+
+config UART_CONSOLE
+    default n

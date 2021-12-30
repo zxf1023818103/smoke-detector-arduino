@@ -1,0 +1,5 @@
+config GPIO
+    default y
+
+config SERIAL
+    default y
