@@ -20,6 +20,14 @@ enum mspbsl_commands {
     CMD_CHANGE_BAUD_RATE = 0x52,
 };
 
+enum mspbsl_baud_rates {
+    BAUDRATE_9600 = 0x02,
+    BAUDRATE_19200 = 0x03,
+    BAUDRATE_38400 = 0x04,
+    BAUDRATE_57600 = 0x05,
+    BAUDRATE_115200 = 0x06,
+};
+
 struct uart_fifo_data {
     
     sys_snode_t node;
@@ -177,20 +185,14 @@ static uint16_t calc_checksum(uint8_t* packet, uint16_t packet_size) {
     return checksum;
 }
 
-static int send_bsl_data_packet(const struct device* uart_device, enum mspbsl_commands cmd, uint32_t address,
-                                const uint8_t* data, uint16_t data_size) {
-    uint16_t packet_size = data_size + 9;
-    uint16_t length = data_size + 4;
+static int send_bsl_data_packet(const struct device* uart_device, const uint8_t* data, uint16_t length) {
+    uint16_t packet_size = length + 5;
     uint8_t* packet = k_malloc(packet_size);
     if (packet) {
         packet[0] = 0x80; /// header
         packet[1] = length & 0xff;
         packet[2] = (length >> 8) & 0xff;
-        packet[3] = cmd;
-        packet[4] = address & 0xff;
-        packet[5] = (address >> 8) & 0xff;
-        packet[6] = (address >> 16) & 0xff;
-        memcpy(packet + 7, data, data_size);
+        memcpy(packet + 3, data, length);
 
         uint16_t checksum = calc_checksum(packet, packet_size);
         packet[packet_size - 2] = checksum & 0xff;
@@ -209,11 +211,74 @@ static int send_bsl_data_packet(const struct device* uart_device, enum mspbsl_co
     }
 }
 
+static int rx_password(const struct device* uart_device, const uint8_t password[32]) {
+    uint8_t data[33];
+    data[0] = CMD_RX_PASSWORD;
+    memcpy(data + 1, password, 32);
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
+static int tx_bsl_version(const struct device* uart_device) {
+    uint8_t data[1] = { CMD_TX_BSL_VERSION };
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
+static int rx_data_block_with_cmd(const struct device* uart_device, uint8_t cmd, uint32_t address, const uint8_t* data, uint16_t data_size) {
+    uint16_t buffer_size = data_size + 4;
+    uint8_t *buffer = k_malloc(buffer_size);
+    if (buffer) {
+
+        buffer[0] = cmd;
+        buffer[1] = address;
+        buffer[2] = address >> 8;
+        buffer[3] = address >> 16;
+        memcpy(buffer + 4, data, data_size);
+
+        int ret = send_bsl_data_packet(uart_device, buffer, buffer_size);
+        
+        k_free(data);
+
+        return ret;
+    }
+    else {
+        LOG_ERR("%s", "k_malloc(): NULL");
+        return -ENOMEM;
+    }
+}
+
+static int rx_data_block(const struct device* uart_device, uint32_t address, const uint8_t* data, uint16_t data_size) {
+    return rx_data_block_with_cmd(uart_device, CMD_RX_DATA_BLOCK, address, data, data_size);
+}
+
+static int rx_data_block_fast(const struct device* uart_device, uint32_t address, const uint8_t* data, uint16_t data_size) {
+    return rx_data_block_with_cmd(uart_device, CMD_RX_DATA_BLOCK_FAST, address, data, data_size);
+}
+
+static int mass_erase(const struct device* uart_device) {
+    uint8_t data[1] = { CMD_MASS_ERASE };
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
+static int crc_check(const struct device* uart_device, uint32_t address, uint16_t length) {
+    uint8_t data[6] = { CMD_CRC_CHECK, address, address >> 8, address >> 16, length, length >> 8 };
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
+static int load_pc(const struct device* uart_device, uint32_t address) {
+    uint8_t data[4] = { CMD_LOAD_PC, address, address >> 8, address >> 16 };
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
+static int change_baud_rate(const struct device* uart_device, enum mspbsl_baud_rates baud_rate) {
+    uint8_t data[2] = { CMD_CHANGE_BAUD_RATE, baud_rate };
+    return send_bsl_data_packet(uart_device, data, sizeof data);
+}
+
 static int connect(const struct device* uart_device,
                    const struct gpio_dt_spec* test_pin_dt_spec,
                    const struct gpio_dt_spec* reset_pin_dt_spec) {
     
     int ret = send_bsl_entry_sequence(test_pin_dt_spec, reset_pin_dt_spec);
-
-    send_bsl_data_packet(uart_device, )
+    
+    uart_irq_rx_enable(uart_device);
 }
