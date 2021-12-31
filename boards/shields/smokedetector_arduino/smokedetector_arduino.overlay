@@ -1,22 +1,8 @@
 / {
-    pins {
-        wakeup_pin {
-            compatible = "gpio-keys";
-            gpios = <&arduino_header 8 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-            label = "Wake up pin";
-        };
-
-        test_pin {
-            compatible = "gpio-leds";
-            gpios = <&arduino_header 9 GPIO_ACTIVE_LOW>;
-            label = "Test pin";
-        };
-
-        reset_pin {
-            compatible = "gpio-leds";
-            gpios = <&arduino_header 10 GPIO_ACTIVE_LOW>;
-            label = "Reset pin";
-        };
+    zephyr,user {
+        wakeup-gpios = <&arduino_header 8 (GPIO_PULL_UP | GPIO_ACTIVE_HIGH)>;
+        test-gpios = <&arduino_header 9 GPIO_ACTIVE_HIGH>;
+        reset-gpios = <&arduino_header 10 GPIO_ACTIVE_HIGH>;
     };
 };
 
