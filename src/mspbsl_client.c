@@ -8,6 +8,12 @@ LOG_MODULE_REGISTER(mspbsl);
 
 static K_FIFO_DEFINE(uart_fifo);
 
+enum mspbsl_errors {
+    ERR_MORE_DATA,
+    ERR_CHECKSUM,
+    SUCCESS,
+};
+
 enum mspbsl_commands {
     CMD_RX_DATA_BLOCK = 0x10,
     CMD_RX_PASSWORD = 0x11,
@@ -28,14 +34,96 @@ enum mspbsl_baud_rates {
     BAUDRATE_115200 = 0x06,
 };
 
-struct uart_fifo_data {
+struct mspbsl_response {
     
     sys_snode_t node;
 
-    int len;
+    uint8_t ack;
 
-    uint8_t data[32];
+    uint16_t length;
+
+    uint8_t bsl_core_response[1];
 };
+
+static uint16_t calc_checksum(const uint8_t* packet, uint16_t packet_size) {
+    uint16_t checksum_low, checksum_high;
+    checksum_low = checksum_high = 0;
+    for (uint16_t i = 0; i < packet_size - 2; i += 2) {
+        checksum_low ^= packet[i];
+    }
+    for (uint16_t i = 1; i < packet_size - 2; i += 2) {
+        checksum_high ^= packet[i];
+    }
+
+    uint16_t checksum = checksum_low | (checksum_high << 8);
+    return ~checksum;
+}
+
+static int validate_bsl_response(const uint8_t* data, uint32_t data_size) {
+    if (data_size >= 4) {
+        uint8_t ack = data[0];
+        uint8_t header = data[1];
+        uint16_t length_low = data[2];
+        uint16_t length_high = data[3];
+        uint16_t length = length_low | (length_high << 8);
+        uint16_t packet_length = length + 5;
+        
+        if (header == 0x80 && data_size >= packet_length) {
+            uint16_t checksum_low = data[packet_length - 2];
+            uint16_t checksum_high = data[packet_length - 1];
+            uint16_t checksum = checksum_low | (checksum_high << 8);
+            uint16_t excepted_checksum = calc_checksum(data, data_size);
+            if (checksum == excepted_checksum) {
+                return SUCCESS;
+            }
+            else {
+                LOG_ERR("checksum: 0x%04x, except 0x%04x", checksum, excepted_checksum);
+                return ERR_CHECKSUM;
+            }
+        }
+        else {
+            return ERR_MORE_DATA;
+        }
+    }
+    else {
+        return ERR_MORE_DATA;
+    }
+}
+
+static int try_to_parse_mspbsl_response(struct mspbsl_response** const response, const uint8_t* data, uint32_t data_size) {
+    int ret = validate_bsl_response(data, data_size);
+    if (!ret) {
+        uint16_t length_low = data[2];
+        uint16_t length_high = data[3];
+        uint16_t length = length_low | (length_high << 8);
+
+        struct mspbsl_response* response = k_malloc(sizeof(struct mspbsl_response) + length - 1);
+        if (response) {
+            response->ack = data[0];
+            response->length = length;
+            memcpy(response->bsl_core_response, data + 4, length);
+            return SUCCESS;
+        }
+        else {
+            return -ENOMEM;
+        }
+    }
+    else {
+        return ret;
+    }
+}
+
+static int next_mspbsl_response(struct mspbsl_response** const response, const uint8_t* data, uint32_t data_size) {
+    for (;;) {
+        int ret = try_to_parse_mspbsl_response(response, data, data_size);
+        if (ret == ERR_CHECKSUM) {
+            
+        }
+        else {
+            return ret;
+        }
+    }
+}
 
 static void on_uart_irq(const struct device *uart_device, void *user_data) {
     ARG_UNUSED(user_data);
@@ -43,29 +131,17 @@ static void on_uart_irq(const struct device *uart_device, void *user_data) {
     while (uart_irq_update(uart_device) && uart_irq_is_pending(uart_device)) {
         int ret = uart_irq_rx_ready(uart_device);
         if (ret == 1) {
-            struct uart_fifo_data fifo_data = { 0 };
             for (;;) {
-                ret = uart_fifo_read(uart_device, fifo_data.data, sizeof fifo_data.data - fifo_data.len);
+                uint8_t ch;
+                ret = uart_fifo_read(uart_device, &ch, 1);
                 if (ret > 0) {
-                    continue;
+                    
                 }
                 else if (ret == 0) {
                     break;
                 }
                 else {
                     LOG_ERR("uart_fifo_read(): %d", ret);
-                    return;
-                }
-            }
-            
-            if (fifo_data.len) {
-                struct uart_fifo_data *data = k_malloc(sizeof(struct uart_fifo_data));
-                if (data) {
-                    memcpy(data, &fifo_data, sizeof fifo_data);
-                    k_fifo_put(&uart_fifo, data);
-                }
-                else {
-                    LOG_ERR("%s", "k_malloc(): NULL");
                     return;
                 }
             }
@@ -123,66 +199,56 @@ static int send_bsl_entry_sequence(const struct gpio_dt_spec* test_pin_dt_spec,
                                    const struct gpio_dt_spec* reset_pin_dt_spec) {
     int ret;
 
-    ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
-    if (ret) {
-        goto err;
+    do {
+        ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
+        if (ret) {
+            break;
+        }
+
+        ret = gpio_pin_set_dt(reset_pin_dt_spec, 0);
+        if (ret) {
+            break;
+        }
+
+        k_msleep(1);
+
+        ret = gpio_pin_set_dt(test_pin_dt_spec, 1);
+        if (ret) {
+            break;
+        }
+
+        k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
+
+        ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
+        if (ret) {
+            break;
+        }
+
+        k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
+
+        ret = gpio_pin_set_dt(test_pin_dt_spec, 1);
+        if (ret) {
+            break;
+        }
+
+        k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
+
+        ret = gpio_pin_set_dt(reset_pin_dt_spec, 1);
+        if (ret) {
+            break;
+        }
+
+        ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
+        if (ret) {
+            break;
+        }
+
+        return 0;
     }
+    while (0);
 
-    ret = gpio_pin_set_dt(reset_pin_dt_spec, 0);
-    if (ret) {
-        goto err;
-    }
-
-    k_msleep(1);
-
-    ret = gpio_pin_set_dt(test_pin_dt_spec, 1);
-    if (ret) {
-        goto err;
-    }
-
-    k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
-
-    ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
-    if (ret) {
-        goto err;
-    }
-
-    k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
-
-    ret = gpio_pin_set_dt(test_pin_dt_spec, 1);
-    if (ret) {
-        goto err;
-    }
-
-    k_usleep(CONFIG_MSP430_SBW_ENABLE_MICROSECONDS);
-
-    ret = gpio_pin_set_dt(reset_pin_dt_spec, 1);
-    if (ret) {
-        goto err;
-    }
-
-    ret = gpio_pin_set_dt(test_pin_dt_spec, 0);
-    if (ret) {
-        goto err;
-    }
-
-err:
     LOG_ERR("gpio_pin_set_dt(): %d", ret);
     return ret;
-}
-
-static uint16_t calc_checksum(uint8_t* packet, uint16_t packet_size) {
-    uint16_t checksum_low, checksum_high;
-    checksum_low = checksum_high = 0;
-    for (uint16_t i = 0; i < packet_size - 2; i += 2) {
-        checksum_low ^= packet[i];
-    }
-    for (uint16_t i = 1; i < packet_size - 2; i += 2) {
-        checksum_high ^= packet[i];
-    }
-
-    uint16_t checksum = checksum_low | (checksum_high << 8);
-    return checksum;
 }
 
 static int send_bsl_data_packet(const struct device* uart_device, const uint8_t* data, uint16_t length) {
