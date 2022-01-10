@@ -7,9 +7,20 @@ set(MBED_PATH ${CMAKE_CURRENT_SOURCE_DIR}/mbed-os CACHE INTERNAL "")
 set(MBED_CONFIG_PATH ${CMAKE_CURRENT_BINARY_DIR} CACHE INTERNAL "")
 set(APP_TARGET smoke-detector-arduino)
 
+include(FetchContent)
 include(${MBED_PATH}/tools/cmake/app.cmake)
 
 project(${APP_TARGET})
+
+FetchContent_Declare(
+    uartframeparser
+    GIT_REPOSITORY https://github.com/zxf1023818103/uartframeparser.git
+    GIT_TAG origin/zephyr
+)
+
+FetchContent_MakeAvailable(uartframeparser)
+
+include_directories(${uartframeparser_SOURCE_DIR}/include)
 
 add_subdirectory(${MBED_PATH})
 
@@ -17,7 +28,7 @@ add_executable(${APP_TARGET}
     main.cpp
 )
 
-target_link_libraries(${APP_TARGET} mbed-os)
+target_link_libraries(${APP_TARGET} mbed-os uartframeparser)
 
 mbed_set_post_build(${APP_TARGET})
 
