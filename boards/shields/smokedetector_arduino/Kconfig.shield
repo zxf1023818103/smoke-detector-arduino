@@ -1,6 +1,0 @@
-config SHIELD_SMOKEDETECTOR_ARDUIONO
-    def_bool $(shields_list_contains,smokedetector_arduino)
-
-config MSP430_SBW_ENABLE_MICROSECONDS
-    int "MSP430 Spy-Bi-Wire enable time (TEST high to acceptance of first clock edge)"
-    default 110
